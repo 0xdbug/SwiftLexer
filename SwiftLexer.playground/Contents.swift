@@ -20,6 +20,7 @@ enum TokenType: String {
     case `operator`
     case literal
     case delimiter
+    case comment
     case error
 }
 
@@ -37,58 +38,86 @@ class LexicalAnalyzer {
     private var lines: [String] = []
     private var tokens: [Token] = []
     
-    // if it starts with /*
-    private var isMultilineComment = false
+    // For multi-line comment tracking
+    private var inMultilineComment = false
+    private var multilineCommentString: String = ""
+    private var multilineCommentStartLine: Int = 0
     
     init(sourceCode: String) {
-        let noComments = removeComments(sourceCode)
-        self.lines = noComments.components(separatedBy: .newlines)
-    }
-    
-    private func removeComments(_ sourceCode: String) -> String {
-        var code = sourceCode
-        
-        while let startRange = code.range(of: "/*") {
-            if let endRange = code.range(of: "*/", range: startRange.upperBound..<code.endIndex) {
-                code.replaceSubrange(startRange.lowerBound..<endRange.upperBound, with: " ")
-            } else {
-                code.removeSubrange(startRange.lowerBound..<code.endIndex)
-                break
-            }
-        }
-        
-        var result = ""
-        for line in code.components(separatedBy: .newlines) {
-            if let commentRange = line.range(of: "//") {
-                result += line[..<commentRange.lowerBound] + "\n"
-            } else {
-                result += line + "\n"
-            }
-        }
-        
-        return result
+        self.lines = sourceCode.components(separatedBy: .newlines)
     }
     
     func analyze() -> [Token] {
         for (lineIndex, line) in lines.enumerated() {
             tokenizeLine(line, lineNumber: lineIndex + 1)
         }
+        // If file ends while still in a multi-line comment, emit what we have
+        if inMultilineComment {
+            tokens.append(Token(type: .comment, lexeme: multilineCommentString, line: multilineCommentStartLine))
+            inMultilineComment = false
+            multilineCommentString = ""
+        }
         return tokens
     }
     
     // break lines of code
     private func tokenizeLine(_ text: String, lineNumber: Int) {
-        var temp = text.trimmingCharacters(in: .whitespaces)
+        var temp = text
+        if inMultilineComment {
+            multilineCommentString += "\n" + temp
+            if let endRange = temp.range(of: "*/") {
+
+                let upToEnd = String(temp[..<endRange.upperBound])
+                multilineCommentString = multilineCommentString.dropLast(temp.count) + upToEnd
+                tokens.append(Token(type: .comment, lexeme: multilineCommentString, line: multilineCommentStartLine))
+                inMultilineComment = false
+                multilineCommentString = ""
+
+                let rest = temp[endRange.upperBound...].trimmingCharacters(in: .whitespaces)
+                if !rest.isEmpty {
+                    tokenizeLine(String(rest), lineNumber: lineNumber)
+                }
+            }
+            return
+        }
+        temp = temp.trimmingCharacters(in: .whitespaces)
+        
         while !temp.isEmpty {
+            if let startRange = temp.range(of: "/*") {
+                let before = String(temp[..<startRange.lowerBound])
+                if !before.trimmingCharacters(in: .whitespaces).isEmpty {
+                    if let (token, len) = extractNextToken(before, lineNumber: lineNumber) {
+                        tokens.append(token)
+                        temp.removeFirst(len)
+                        temp = temp.trimmingCharacters(in: .whitespaces)
+                        continue
+                    }
+                }
+                let after = String(temp[startRange.lowerBound...])
+                if let endRange = after.range(of: "*/") {
+                    let comment = String(after[..<endRange.upperBound])
+                    tokens.append(Token(type: .comment, lexeme: comment, line: lineNumber))
+                    temp = String(after[endRange.upperBound...]).trimmingCharacters(in: .whitespaces)
+                    continue
+                } else {
+                    inMultilineComment = true
+                    multilineCommentStartLine = lineNumber
+                    multilineCommentString = after
+                    return
+                }
+            }
             if let (token, len) = extractNextToken(temp, lineNumber: lineNumber) {
                 tokens.append(token)
                 temp.removeFirst(len)
                 temp = temp.trimmingCharacters(in: .whitespaces)
+            } else {
+                break
             }
         }
     }
     
     private func extractNextToken(_ str: String, lineNumber: Int) -> (Token, Int)? {
+        if let (token, len) = matchComment(str, lineNumber: lineNumber) { return (token, len) }
         if let (token, len) = matchLiteral(str, lineNumber: lineNumber) { return (token, len) }
         if let (token, len) = matchOperator(str, lineNumber: lineNumber) { return (token, len) }
         if let (token, len) = matchBracket(str, lineNumber: lineNumber) { return (token, len) }
@@ -98,6 +127,23 @@ class LexicalAnalyzer {
         
         if let (token, len) = matchInvalidStringLiteral(str, lineNumber: lineNumber) { return (token, len) }
         if let (token, len) = matchInvalidIdentifier(str, lineNumber: lineNumber) { return (token, len) }
+        return nil
+    }
+    
+    private func matchComment(_ str: String, lineNumber: Int) -> (Token, Int)? {
+        if str.hasPrefix("//") {
+            let comment = str
+            return (Token(type: .comment, lexeme: comment, line: lineNumber), comment.count)
+        }
+        if str.hasPrefix("/*") {
+            if let endRange = str.range(of: "*/") {
+                let comment = String(str[str.startIndex..<endRange.upperBound])
+                return (Token(type: .comment, lexeme: comment, line: lineNumber), comment.count)
+            } else {
+                let comment = str
+                return (Token(type: .comment, lexeme: comment, line: lineNumber), comment.count)
+            }
+        }
         return nil
     }
     
