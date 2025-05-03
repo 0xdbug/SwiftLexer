@@ -25,6 +25,7 @@ enum TokenType: String {
     case error
 }
 
+// this is the model im using to represent each token
 struct Token {
     let type: TokenType
     let value: String
@@ -96,7 +97,7 @@ class LexicalAnalyzer {
             tokenizeBySpace(beforeComment, lineNumber: lineNumber)
             
             if let endMultilineComment = commentRemvedLine.range(of: "*/", range: startMultilineComment.upperBound..<commentRemvedLine.endIndex) {
-
+                
                 let commentText = String(commentRemvedLine[startMultilineComment.lowerBound...endMultilineComment.upperBound])
                 
                 tokens.append(Token(type: .comment, value: commentText, line: lineNumber))
@@ -115,86 +116,127 @@ class LexicalAnalyzer {
         }
     }
     
+    // break lines of code
     private func tokenizeBySpace(_ text: String, lineNumber: Int) {
-        var temp = text
+        var temp = text.trimmingCharacters(in: .whitespaces)
         while !temp.isEmpty {
-            temp = temp.trimmingCharacters(in: .whitespaces)
-            
-            if temp.isEmpty { break }
-            
-            // literal
-            if temp.first == "\"" {
-                if let closingIndex = temp.dropFirst().firstIndex(of: "\"") {
-                    let endIndex = temp.index(after: closingIndex)
-                    let literal = String(temp[..<endIndex])
-                    tokens.append(Token(type: .literal, value: literal, line: lineNumber))
-                    temp = String(temp[endIndex...])
-                    continue
-                } else {
-                    tokens.append(Token(type: .error, value: temp, line: lineNumber))
-                    break
-                }
-            }
-            
-            // operators
-            if let op = operators.sorted(by: { $0.count > $1.count }).first(where: { temp.hasPrefix($0) }) {
-                tokens.append(Token(type: .operator, value: op, line: lineNumber))
-                temp.removeFirst(op.count)
-                continue
-            }
-            
-            // delimiters
-            if let br = brackets.first(where: { temp.hasPrefix($0) }) {
-                tokens.append(Token(type: .delimiter, value: br, line: lineNumber))
-                temp.removeFirst(br.count)
-                continue
-            }
-            
-            if let match = temp.firstIndex(where: { $0.isWhitespace || brackets.contains(String($0)) || operators.contains(String($0)) }) {
-                let part = String(temp[..<match])
-                classifyToken(part, lineNumber: lineNumber)
-                temp = String(temp[match...])
+            if let (token, len) = extractNextToken(temp, lineNumber: lineNumber) {
+                tokens.append(token)
+                temp.removeFirst(len)
+                temp = temp.trimmingCharacters(in: .whitespaces)
             } else {
-                classifyToken(temp, lineNumber: lineNumber)
-                break
+                tokens.append(Token(type: .error, value: String(temp.first!), line: lineNumber))
+                temp.removeFirst()
+                temp = temp.trimmingCharacters(in: .whitespaces)
             }
         }
     }
     
-    private func classifyToken(_ part: String, lineNumber: Int) {
-        let trimmed = part.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
+    private func extractNextToken(_ str: String, lineNumber: Int) -> (Token, Int)? {
+        if let (token, len) = matchComment(str, lineNumber: lineNumber) { return (token, len) }
+        if let (token, len) = matchLiteral(str, lineNumber: lineNumber) { return (token, len) }
+        if let (token, len) = matchOperator(str, lineNumber: lineNumber) { return (token, len) }
+        if let (token, len) = matchBracket(str, lineNumber: lineNumber) { return (token, len) }
+        if let (token, len) = matchSpecialCharacter(str, lineNumber: lineNumber) { return (token, len) }
+        if let (token, len) = matchKeyword(str, lineNumber: lineNumber) { return (token, len) }
+        if let (token, len) = matchIdentifier(str, lineNumber: lineNumber) { return (token, len) }
         
-        if javaKeywords.contains(trimmed) {
-            tokens.append(Token(type: .keyword, value: trimmed, line: lineNumber))
-            
-        } else if isString(trimmed) {
-            tokens.append(Token(type: .literal, value: trimmed, line: lineNumber))
-        } else if isNumber(trimmed) {
-            tokens.append(Token(type: .literal, value: trimmed, line: lineNumber))
-        } else if isValidIdentifier(trimmed) {
-            tokens.append(Token(type: .identifier, value: trimmed, line: lineNumber))
-        } else {
-            tokens.append(Token(type: .error, value: trimmed, line: lineNumber))
+        if let (token, len) = matchInvalidStringLiteral(str, lineNumber: lineNumber) { return (token, len) }
+        if let (token, len) = matchInvalidIdentifier(str, lineNumber: lineNumber) { return (token, len) }
+        return nil
+    }
+    
+    private func matchComment(_ str: String, lineNumber: Int) -> (Token, Int)? {
+        let singleLinePattern = "^//.*"
+        if let match = str.range(of: singleLinePattern, options: .regularExpression) {
+            let comment = String(str[match])
+            return (Token(type: .comment, value: comment, line: lineNumber), comment.count)
         }
-    }
-    
-    private func isValidIdentifier(_ str: String) -> Bool {
-        guard let first = str.first, first.isLetter || first == "_" else {
-            return false
+        let multiLinePattern = "^/\\*.*?\\*/"
+        if let match = str.range(of: multiLinePattern, options: .regularExpression) {
+            let comment = String(str[match])
+            return (Token(type: .comment, value: comment, line: lineNumber), comment.count)
         }
-        return str.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" }
+        return nil
     }
     
-    private func isNumber(_ str: String) -> Bool {
-        return Double(str) != nil
+    private func matchLiteral(_ str: String, lineNumber: Int) -> (Token, Int)? {
+        let stringPattern = #"^"([^"\\]|\\.)*""#
+        if let match = str.range(of: stringPattern, options: .regularExpression) {
+            let literal = String(str[match])
+            return (Token(type: .literal, value: literal, line: lineNumber), literal.count)
+        }
+        let numberPattern = "^[0-9]+(\\.[0-9]+)?"
+        if let match = str.range(of: numberPattern, options: .regularExpression) {
+            let literal = String(str[match])
+            return (Token(type: .literal, value: literal, line: lineNumber), literal.count)
+        }
+        return nil
     }
     
-    private func isString(_ str: String) -> Bool {
-        return str.first == "\"" && str.last == "\"" && str.count >= 2
+    private func matchOperator(_ str: String, lineNumber: Int) -> (Token, Int)? {
+        let sortedOps = operators.sorted { $0.count > $1.count }
+        let pattern = "^(" + sortedOps.map { NSRegularExpression.escapedPattern(for: $0) }.joined(separator: "|") + ")"
+        if let match = str.range(of: pattern, options: .regularExpression) {
+            let op = String(str[match])
+            return (Token(type: .operator, value: op, line: lineNumber), op.count)
+        }
+        return nil
     }
-
-
+    
+    private func matchBracket(_ str: String, lineNumber: Int) -> (Token, Int)? {
+        let pattern = "^[\\(\\)\\{\\}\\[\\]]"
+        if let match = str.range(of: pattern, options: .regularExpression) {
+            let bracket = String(str[match])
+            return (Token(type: .delimiter, value: bracket, line: lineNumber), bracket.count)
+        }
+        return nil
+    }
+    
+    private func matchSpecialCharacter(_ str: String, lineNumber: Int) -> (Token, Int)? {
+        let pattern = "^[,.;]"
+        if let match = str.range(of: pattern, options: .regularExpression) {
+            let special = String(str[match])
+            return (Token(type: .delimiter, value: special, line: lineNumber), special.count)
+        }
+        return nil
+    }
+    
+    private func matchKeyword(_ str: String, lineNumber: Int) -> (Token, Int)? {
+        let pattern = "^\\b(" + javaKeywords.joined(separator: "|") + ")\\b"
+        if let match = str.range(of: pattern, options: .regularExpression) {
+            let keyword = String(str[match])
+            return (Token(type: .keyword, value: keyword, line: lineNumber), keyword.count)
+        }
+        return nil
+    }
+    
+    private func matchIdentifier(_ str: String, lineNumber: Int) -> (Token, Int)? {
+        let pattern = "^[a-zA-Z_][a-zA-Z0-9_]*"
+        if let match = str.range(of: pattern, options: .regularExpression) {
+            let identifier = String(str[match])
+            return (Token(type: .identifier, value: identifier, line: lineNumber), identifier.count)
+        }
+        return nil
+    }
+    
+    private func matchInvalidStringLiteral(_ str: String, lineNumber: Int) -> (Token, Int)? {
+        if str.first == "\"" {
+            let errorStr = String(str)
+            return (Token(type: .error, value: errorStr, line: lineNumber), errorStr.count)
+        }
+        return nil
+    }
+    
+    private func matchInvalidIdentifier(_ str: String, lineNumber: Int) -> (Token, Int)? {
+        let pattern = "^#[a-zA-Z0-9_]+"
+        if let match = str.range(of: pattern, options: .regularExpression) {
+            let errorId = String(str[match])
+            return (Token(type: .error, value: errorId, line: lineNumber), errorId.count)
+        }
+        return nil
+    }
+    
     func printAllTokens() {
         for token in tokens {
             print("\(token.line): \(token.description())")
